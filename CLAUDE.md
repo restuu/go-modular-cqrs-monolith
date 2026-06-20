@@ -56,6 +56,7 @@ modules/<domain>/
     ├── domain/           # entity types + single repository interface
     ├── persistence/      # repository implementation
     ├── port/             # narrow outbound interfaces (consumer-defined)
+    ├── adapter/          # translators for shape/vocabulary mismatch (optional)
     └── transport/        # Fiber HTTP handler + route mounting
 ```
 
@@ -70,12 +71,32 @@ CQRS here is a **code-organisation convention**, not a runtime dispatch mechanis
 
 ### Inter-module communication
 
-Modules may only call each other through the producer's `api/` surface, using a **consumer-defined narrow interface** declared in the consumer's `internal/port/` package. The producer's `*Service` satisfies the interface structurally — no adapter needed when shapes match.
+Modules may only call each other through the producer's `api/` surface, using a **consumer-defined narrow interface** declared in the consumer's `internal/port/` package.
+
+**When shapes match** — the producer's method signature and return type align with what the consumer needs — the producer's `*Service` satisfies the port structurally. No adapter required.
+
+**When shapes diverge** — the consumer needs a different method (e.g. `FindByModelNumbers([]string)`) than the producer exposes (e.g. `Search(req)`), or translation/aggregation is required — add `internal/adapter/` and split `internal/port/` into **two** interfaces:
+
+| Interface | Role | Named |
+|---|---|---|
+| `port.<Capability>` | Inbound — what `Query`/`Command` depends on | capability noun, e.g. `ProductCatalog` |
+| `port.<Producer>API` | Adaptee — mirrors the producer's `api.Service` surface | `<Producer>API`, e.g. `ProductAPI` |
+
+The adapter struct (`<Consumer><Producer>Adapter`) implements `port.<Capability>` by wrapping `port.<Producer>API`. Both interfaces live in `internal/port/`; `internal/adapter/` holds only translator structs.
 
 ```go
 // order/internal/port/order_product_port.go
-type ProductService interface {
+
+// ProductCatalog is the inbound capability shape that Query depends on.
+type ProductCatalog interface {
     GetByModelNumber(ctx context.Context, modelNumber string) (productdto.ProductDetailResponse, error)
+    FindByModelNumbers(ctx context.Context, modelNumbers []string) ([]productdto.ProductListItemResponse, error)
+}
+
+// ProductAPI mirrors product/api.Service — main.go's productSvc satisfies this structurally.
+type ProductAPI interface {
+    GetByModelNumber(ctx context.Context, modelNumber string) (productdto.ProductDetailResponse, error)
+    Search(ctx context.Context, req productdto.ProductSearchRequest) (productdto.ProductSearchResponse, error)
 }
 ```
 
@@ -83,6 +104,7 @@ Rules:
 - **Never import another module's `internal/`.**
 - **Cross-module data references use a primitive ID (UUID/string), never a DB-level FK.**
 - The producer's `api/dto` types are the cross-module data contract.
+- **Both port interfaces live in `internal/port/`.** `internal/adapter/` holds only translator structs, never interface definitions.
 
 ### Dependency injection
 
@@ -104,6 +126,29 @@ Key packages:
 - `platform/errcode` — typed machine-readable error codes.
 - `platform/metrics` — Prometheus registry + pgx pool collector; served at `/internal/metrics`.
 
+### Internal projections (read models)
+
+When a query needs an internal scan target that differs from the public `api/dto/` type — e.g. a DB JOIN result or a view not exposed externally — define it in `internal/domain/` as a plain struct in its own file:
+
+```
+internal/domain/<domain>_projection.go   ← internal read-model structs only
+```
+
+Rules:
+- **Pure value types only** — no methods, no business logic.
+- **Zero imports from `command/`, `query/`, or `persistence/`** — the file must remain a leaf within `internal/`.
+- Both `internal/query/` and `internal/persistence/` may import domain freely (domain is already the base layer), so no new import edges are introduced.
+- Promote to `api/dto/` only when another module or the HTTP layer needs the type.
+
+```go
+// order_projection.go
+type OrderSummaryProjection struct {
+    ID        uuid.UUID
+    Status    string
+    CreatedAt time.Time
+}
+```
+
 ## Invariants to preserve
 
 These are the non-obvious rules from the house pattern. Breaking them collapses the architecture:
@@ -114,16 +159,18 @@ These are the non-obvious rules from the house pattern. Breaking them collapses 
 4. **No cross-module DB foreign keys.** Reference another module's entity by a primitive ID only.
 5. **Domain-first file naming:** `<domain>_<concept>.go` (e.g. `order_repository.go`, `order_create_command.go`). No `_service` suffix — it's redundant.
 6. **Domain layer is framework-free.** `domain/`, `command/`, `query/`, `port/` must not import `github.com/gofiber/fiber`.
+7. **Projections are pure structs.** `<domain>_projection.go` in `internal/domain/` must have zero methods and zero imports from other `internal/` sub-packages.
+8. **Both port interfaces live in `internal/port/`.** When a cross-module adapter is needed, the capability interface (`port.<Capability>`) and the adaptee interface (`port.<Producer>API`) both belong in `internal/port/`. `internal/adapter/` holds only translator structs — never interface definitions.
 
 ## Adding a new module
 
 1. Create `modules/<domain>/api/<domain>_api.go` with `Service`, `ServiceDeps`, `RouterDeps`, `NewService`, `RegisterRouter`.
 2. Create `modules/<domain>/api/dto/<domain>_dto.go` (leaf package — no `internal/` imports).
-3. Create `internal/domain/<domain>.go` (entity) and `<domain>_repository.go` (single interface with both write + read methods).
+3. Create `internal/domain/<domain>.go` (entity) and `<domain>_repository.go` (single interface with both write + read methods). If queries need internal scan targets, add `<domain>_projection.go` (pure structs, no methods).
 4. Create `internal/command/<domain>_command.go` (struct + `NewCommand`) and one file per operation.
 5. Create `internal/query/<domain>_query.go` (struct + `NewQuery`) and one file per operation.
 6. Create `internal/persistence/<domain>_repository_impl.go`.
-7. If this module calls another, create `internal/port/<domain>_<target>_port.go`.
+7. If this module calls another, create `internal/port/<domain>_<target>_port.go` with a `<Capability>` interface. If the producer's shape differs from what you need, also add a `<Producer>API` adaptee interface in the same file and an `internal/adapter/<domain>_<target>_adapter.go` translator struct.
 8. If it serves HTTP, create `internal/transport/<domain>_http_handler.go` and `<domain>_http_router.go`.
 9. Wire in `cmd/webserver/main.go` in dependency order; append to `modules` slice as a `router.RouteRegistrar`.
 

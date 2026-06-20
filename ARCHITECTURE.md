@@ -31,6 +31,7 @@ modules/<domain>/
     ├── query/              Query struct + one file per read operation
     ├── persistence/        repository implementation(s)
     ├── port/               narrow outbound interfaces declared by this module
+    ├── adapter/            translators for shape/vocabulary mismatch (optional; see §Inter-module)
     └── transport/          Fiber HTTP handler + route mounting
 ```
 
@@ -144,9 +145,29 @@ depending on clarity.
    services later becomes a data-migration problem.
 3. **No cross-module transactions.** Each module manages its own DB transaction scope.
    Cross-module write paths compensate on failure rather than rolling back.
-4. **Shapes match → no adapter needed.** If the producer's method signature and return
-   type align with what the consumer declared in its port, wire directly in `main.go`.
-   Add `internal/adapter/` only for vocabulary/shape mismatch or aggregation.
+4. **Shapes match → wire directly. Shapes diverge → use an adapter.**
+
+   If the producer's method signature and return type align with what the consumer declared in its
+   port, the producer's `*Service` satisfies the port structurally — wire directly in `main.go`.
+
+   When the consumer needs a different shape (e.g. `FindByModelNumbers([]string)`) than the
+   producer exposes (e.g. `Search(req)`), add an `internal/adapter/` translator and split
+   `internal/port/` into two named interfaces:
+
+   | Interface | Naming | Satisfied by |
+   |---|---|---|
+   | `port.<Capability>` (inbound) | capability noun — what this module needs | the adapter struct |
+   | `port.<Producer>API` (adaptee) | `<Producer>API` — mirrors the producer's surface | the producer's `*Service` |
+
+   ```
+   port.ProductAPI  ←──── OrderProductAdapter ────►  port.ProductCatalog
+   (product *Service          (internal/adapter/)         (Query depends on this)
+    satisfies this)
+   ```
+
+   Both interfaces live in `internal/port/`. The adapter struct in `internal/adapter/` holds
+   no interface definitions — only the translation logic. See `modules/order` for the full example
+   (`port.ProductCatalog` + `port.ProductAPI` + `adapter.OrderProductAdapter`).
 
 ## Dependency injection
 
@@ -158,7 +179,7 @@ and injected by constructor:
 productSvc := productapi.NewService(productapi.ServiceDeps{DB: sqlDB})
 orderSvc   := orderapi.NewService(orderapi.ServiceDeps{
     DB:             sqlDB,
-    ProductService: productSvc,   // satisfies order's port.ProductService interface
+    ProductService: productSvc,   // satisfies order's port.ProductAPI interface; adapted to port.ProductCatalog inside NewService
 })
 ```
 
@@ -209,16 +230,20 @@ for all entities, DTOs, URLs, and cross-module references.
 **Recommended fix:** Change `int` → `uuid.UUID` on every entity, DTO, repository
 interface, and route param. The DB column stays `BIGSERIAL`; it's just never exposed.
 
-### 2. Port name is producer-centric
+### 2. Port naming convention — resolved
 
-**What:** `order/internal/port/order_product_port.go` declares `ProductService`.
+**Previously:** `order/internal/port/order_product_port.go` declared a single `ProductService`
+interface, named from the producer's perspective rather than the consumer's need.
 
-**Why it matters:** The name reads like the producer's API rather than the consumer's
-need. The convention is to name the interface from the consumer's perspective:
-`ProductLookup`, `ProductByModelNumber`, or `ModelNumberResolver`.
+**Resolution:** When adapter translation is needed, the port file now declares two interfaces
+with distinct roles — a capability-named inbound interface and a `<Producer>API` adaptee interface:
 
-**Recommended fix:** Rename to something like `ProductLookup` or `ModelNumberResolver`
-in the port file. Zero behaviour change; the compiler validates the fix immediately.
+- `port.ProductCatalog` — the inbound capability shape that `Query` depends on.
+- `port.ProductAPI` — the adaptee mirroring `product/api.Service`; `main.go`'s `productSvc`
+  satisfies this structurally.
+
+When shapes match (no adapter), a single `<Module>Service`-style port remains valid — the
+two-interface split is only needed when a translator struct is introduced.
 
 ### 3. `Command` has no dependencies; repository is query-only
 

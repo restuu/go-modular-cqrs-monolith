@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 
+	"go-modular-cqrs-monolith/modules/order/internal/adapter"
 	"go-modular-cqrs-monolith/modules/order/internal/command"
 	"go-modular-cqrs-monolith/modules/order/internal/persistence"
 	"go-modular-cqrs-monolith/modules/order/internal/port"
@@ -21,7 +22,7 @@ type RouterDeps struct {
 
 type ServiceDeps struct {
 	DB             *sql.DB
-	ProductService port.ProductService
+	ProductService port.ProductAPI
 }
 
 type Service struct {
@@ -31,12 +32,13 @@ type Service struct {
 
 func NewService(deps ServiceDeps) *Service {
 	orderRepo := persistence.NewOrderRepositoryImpl(deps.DB)
+	orderProductAdapter := adapter.NewOrderProductAdapter(deps.ProductService)
 
 	return &Service{
 		Command: command.NewCommand(),
 		Query: query.NewQuery(
 			orderRepo,
-			deps.ProductService,
+			orderProductAdapter,
 		),
 	}
 }

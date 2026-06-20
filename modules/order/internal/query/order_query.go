@@ -7,12 +7,12 @@ import (
 
 type Query struct {
 	orderRepo  domain.OrderRepository
-	productSvc port.ProductService
+	productSvc port.ProductCatalog
 }
 
 func NewQuery(
 	orderRepo domain.OrderRepository,
-	productSvc port.ProductService,
+	productSvc port.ProductCatalog,
 ) *Query {
 	return &Query{
 		orderRepo:  orderRepo,

@@ -7,3 +7,12 @@ type ProductDetailResponse struct {
 	Name        string
 	Price       decimal.Decimal
 }
+
+type ProductSearchResponse struct {
+	Items []ProductListItemResponse
+	Total int
+}
+
+type ProductListItemResponse struct {
+	ModelNumber string
+}

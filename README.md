@@ -1,9 +1,5 @@
 # go-modular-cqrs-monolith
 
-> **Suggested rename:** `go-modular-cqrs-monolith` → `go-modular-cqrs-monolith`.
-> The modular-monolith boundary is the headline pattern; CQRS is a sub-convention inside it.
-> `-template` is implied by the GitHub template flag.
-
 A production-ready Go project template for the **Modular CQRS Monolith** architecture: the organisational discipline of a distributed system, deployed as a single binary, without the operational overhead of microservices.
 
 Each business domain lives in its own **module** enforced by Go's compiler (`internal/` rule). Modules communicate only through narrow, consumer-defined interfaces. CQRS is a structural convention — no command bus or mediator — making the codebase straightforward to navigate and test.
@@ -82,8 +78,8 @@ go run ./cmd/webserver
 cmd/
   webserver/main.go     single entry point; composition root (all manual DI here)
 modules/
-  order/                full exemplar — command + query + transport + port
-  product/              query-only module; no HTTP routes of its own
+  order/                full exemplar — command + query + transport + port + adapter
+  product/              query-only module; no HTTP routes; consumed by order via port + adapter
 platform/
   config/               env-var config loader
   httpx/                Fiber app factory, middleware, request/response helpers
@@ -96,7 +92,7 @@ platform/
 
 1. Create `modules/<domain>/api/<domain>_api.go` — `Service`, `NewService`, `RegisterRouter`.
 2. Add `modules/<domain>/api/dto/` — public DTOs (leaf package, no `internal/` imports).
-3. Build out `internal/` (domain, command, query, persistence; add `port/` and `transport/` as needed).
+3. Build out `internal/` (domain, command, query, persistence; add `port/` and `transport/` as needed). If a dependency's shape differs from your port, also add `internal/adapter/` — see [ARCHITECTURE.md §Inter-module](./ARCHITECTURE.md#inter-module-communication-rules).
 4. Wire the module in `cmd/webserver/main.go` in dependency order.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) and `CLAUDE.md` for the full checklist and invariants.
